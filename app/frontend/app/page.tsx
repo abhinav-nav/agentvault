@@ -62,6 +62,31 @@ function AppContent() {
         </div>
       </div>
 
+      {/* Live Devnet Proof */}
+      <div className="w-full max-w-3xl mt-12 space-y-4">
+        <h2 className="text-xl font-bold text-center">Live on Solana Devnet</h2>
+        <p className="text-xs text-muted text-center">Every transaction is verifiable on-chain. Click to view on Solana Explorer.</p>
+        <div className="bg-surface border border-border rounded-xl p-4 space-y-2">
+          {[
+            { label: "Vault Created", tx: "4moZJ3iiiBE6h12wXSBqUh12m3AVz1sCbUgW9t41CLw4AN4FqibDPgGoeTRWpi6LxwG1pezkdFkXubEpLGM3joYU" },
+            { label: "Agent Registered", tx: "51BVd89Rx2RJ5bh7SrF2Y7kkH5CpQx4WXiW3BhSJm65FkrfvZ6p4sVm1pQ6gxT1TsVAQsQq16kucFZi2nXgVhC5" },
+            { label: "Vault Funded ($10,000 USDC)", tx: "447VF1BLWu6Twb2zdLDFnm6nzWN9d7RWp3jrNjhc5Yj6K5XVQV1TgP1hqaFxNBxPKHa2kxjZCZYfmchsWvqJzC" },
+            { label: "Agent Payment ($15 USDC)", tx: "4XbQWg7oVTjqtkRLYajFyubMNKz7sM5Jqm96saevjVdxvcxsdxk8yZsSmhFmJtLdp33fsDwWgdCQDX7EM1zsFeSu" },
+            { label: "Kill Switch (Agent Deactivated)", tx: "2cX9ZtuvD23P8CUJPbiY8JTurx1QKkyBULmA4GKigoyBjKQKvvoocAyrUNDsbmpviRD1KSBBBfEYx5w92ENuVpuj" },
+          ].map((item) => (
+            <a key={item.label} href={`https://explorer.solana.com/tx/${item.tx}?cluster=devnet`} target="_blank" rel="noopener noreferrer"
+              className="flex items-center justify-between py-2 px-3 rounded-lg hover:bg-surface-2 transition-colors group">
+              <span className="text-sm text-foreground">{item.label}</span>
+              <span className="text-xs text-accent font-mono group-hover:underline">{item.tx.slice(0, 12)}...&nbsp;↗</span>
+            </a>
+          ))}
+        </div>
+        <p className="text-xs text-center">
+          <a href="https://explorer.solana.com/address/8g5hMx6AwTUFCrKwuaCfDY468qE4bbHiw8BvdiepUJdo?cluster=devnet" target="_blank" rel="noopener noreferrer"
+            className="text-accent hover:underline">View Program on Solscan ↗</a>
+        </p>
+      </div>
+
       {/* Connector logos / badges */}
       <div className="mt-12 text-center space-y-3">
         <p className="text-xs text-muted uppercase tracking-wider">Works with</p>
