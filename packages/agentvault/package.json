@@ -1,0 +1,39 @@
+{
+  "name": "@agentvault/sdk",
+  "version": "0.1.0",
+  "description": "Treasury & budget protocol for autonomous AI agents on Solana. Give agents a USDC budget, set spending limits, get on-chain receipts.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "agentvault": "./bin/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch"
+  },
+  "keywords": [
+    "solana",
+    "ai-agent",
+    "treasury",
+    "usdc",
+    "stablecoin",
+    "budget",
+    "anchor",
+    "elizaos",
+    "x402",
+    "agentic-payments"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@coral-xyz/anchor": "^0.31.1",
+    "@solana/spl-token": "^0.4.14",
+    "@solana/web3.js": "^1.98.4",
+    "commander": "^12.0.0",
+    "chalk": "^4.1.2",
+    "ora": "^5.4.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "@types/node": "^20.0.0"
+  }
+}
