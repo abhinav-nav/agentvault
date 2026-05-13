@@ -1,19 +1,25 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { PublicKey } from "@solana/web3.js";
 import { BN } from "@coral-xyz/anchor";
-import { formatUsdc, USDC_DECIMALS } from "@/lib/program";
+import { formatUsdc, USDC_DECIMALS, findTeamPda, findVaultPda } from "@/lib/program";
 import { MOCK_TEAM, MOCK_MEMBERS, MOCK_RECEIPTS, MOCK_VAULT_BALANCE } from "@/lib/mock-data";
 import { BUILTIN_CONNECTORS, SDK_SNIPPETS } from "@/lib/connectors";
 import type { AgentVaultConnector, ConnectorConfigField } from "@/lib/connectors";
+import { useWallet } from "./WalletProvider";
+import * as anchor from "@/lib/anchor";
 
 const USDC = 10 ** USDC_DECIMALS;
 
+type Mode = "demo" | "live";
+
 export default function DemoDashboard() {
+  const { wallet } = useWallet();
+  const [mode, setMode] = useState<Mode>("demo");
   const [activeTab, setActiveTab] = useState<"agents" | "connectors" | "activity" | "sdk">("agents");
 
-  // Live state from mock data — everything mutates this
+  // Shared state
   const [members, setMembers] = useState(MOCK_MEMBERS.map(m => ({ ...m, account: { ...m.account } })));
   const [receipts, setReceipts] = useState([...MOCK_RECEIPTS]);
   const [vaultBalance, setVaultBalance] = useState(MOCK_VAULT_BALANCE);
@@ -26,127 +32,248 @@ export default function DemoDashboard() {
   const [showEditLimits, setShowEditLimits] = useState(false);
   const [toast, setToast] = useState("");
 
+  // Live mode state
+  const [liveTeam, setLiveTeam] = useState<any>(null);
+  const [liveLoading, setLiveLoading] = useState(false);
+  const [liveTxPending, setLiveTxPending] = useState(false);
+  const [hasVault, setHasVault] = useState(false);
+
+  // Switch to live mode when wallet connects
+  useEffect(() => {
+    if (wallet?.connected) {
+      loadLiveData();
+    } else {
+      setMode("demo");
+    }
+  }, [wallet?.connected]);
+
+  const loadLiveData = useCallback(async () => {
+    if (!wallet) return;
+    setLiveLoading(true);
+    try {
+      const team = await anchor.fetchTeam(wallet.publicKey);
+      if (team) {
+        setHasVault(true);
+        setLiveTeam(team);
+        setMode("live");
+
+        const [teamPda] = findTeamPda(wallet.publicKey);
+        const balance = await anchor.fetchVaultBalance(teamPda);
+        setVaultBalance(balance);
+        setTotalDisbursed(Number(team.totalDisbursed));
+        setPaymentCount(team.paymentCount);
+
+        const allMembers = await anchor.fetchAllMembers(teamPda);
+        if (allMembers.length > 0) {
+          setMembers(allMembers);
+        }
+
+        const allReceipts = await anchor.fetchAllReceipts(teamPda);
+        if (allReceipts.length > 0) {
+          setReceipts(allReceipts);
+        }
+      } else {
+        setHasVault(false);
+        setMode("live");
+      }
+    } catch (err) {
+      console.error("Failed to load live data:", err);
+      setMode("demo");
+    } finally {
+      setLiveLoading(false);
+    }
+  }, [wallet]);
+
   // Derived
   const activeAgents = members.filter(m => m.account.isActive);
   const connectedCount = connectors.filter(c => c.status === "connected").length;
 
   function showToast(msg: string) {
     setToast(msg);
-    setTimeout(() => setToast(""), 4000);
+    setTimeout(() => setToast(""), 5000);
   }
 
-  // ---- KILL SWITCH ----
-  function handleKill(walletStr: string) {
+  // ---- LIVE: Create Vault ----
+  async function handleCreateVault(name: string) {
+    if (!wallet) return;
+    setLiveTxPending(true);
+    try {
+      const sig = await anchor.createTeam(wallet, name);
+      showToast(`Vault created! TX: ${sig.slice(0, 8)}...`);
+      await loadLiveData();
+    } catch (err: any) {
+      showToast(`Error: ${err.message?.slice(0, 80)}`);
+    } finally {
+      setLiveTxPending(false);
+    }
+  }
+
+  // ---- LIVE: Register Agent ----
+  async function handleLiveRegister(walletAddr: string, role: string, rate: number) {
+    if (!wallet) return;
+    setLiveTxPending(true);
+    try {
+      const memberPubkey = new PublicKey(walletAddr);
+      const sig = await anchor.addMember(wallet, memberPubkey, role, Math.round(rate * USDC));
+      showToast(`Agent "${role}" registered on-chain! TX: ${sig.slice(0, 8)}...`);
+      await loadLiveData();
+    } catch (err: any) {
+      showToast(`Error: ${err.message?.slice(0, 80)}`);
+    } finally {
+      setLiveTxPending(false);
+    }
+  }
+
+  // ---- LIVE: Fund Vault ----
+  async function handleLiveFund(amount: number) {
+    if (!wallet) return;
+    setLiveTxPending(true);
+    try {
+      const sig = await anchor.fundVault(wallet, Math.round(amount * USDC));
+      showToast(`Funded $${amount.toFixed(2)} USDC! TX: ${sig.slice(0, 8)}...`);
+      await loadLiveData();
+    } catch (err: any) {
+      showToast(`Error: ${err.message?.slice(0, 80)}`);
+    } finally {
+      setLiveTxPending(false);
+    }
+  }
+
+  // ---- LIVE: Pay Agent ----
+  async function handleLivePay(walletStr: string, amount: number, memo: string) {
+    if (!wallet) return;
+    setLiveTxPending(true);
+    try {
+      const memberPubkey = new PublicKey(walletStr);
+      const sig = await anchor.directPay(wallet, memberPubkey, Math.round(amount * USDC), memo);
+      showToast(`Sent $${amount.toFixed(2)} USDC! TX: ${sig.slice(0, 8)}...`);
+      await loadLiveData();
+    } catch (err: any) {
+      showToast(`Error: ${err.message?.slice(0, 80)}`);
+    } finally {
+      setLiveTxPending(false);
+    }
+  }
+
+  // ---- LIVE: Kill Switch ----
+  async function handleLiveKill(walletStr: string) {
+    if (!wallet) return;
+    setLiveTxPending(true);
+    try {
+      const memberPubkey = new PublicKey(walletStr);
+      const sig = await anchor.deactivateMember(wallet, memberPubkey);
+      showToast(`Agent deactivated on-chain! TX: ${sig.slice(0, 8)}...`);
+      await loadLiveData();
+    } catch (err: any) {
+      showToast(`Error: ${err.message?.slice(0, 80)}`);
+    } finally {
+      setLiveTxPending(false);
+    }
+  }
+
+  // ---- DEMO: Kill Switch ----
+  function handleDemoKill(walletStr: string) {
     setMembers(prev => prev.map(m =>
       m.account.wallet.toBase58() === walletStr
         ? { ...m, account: { ...m.account, isActive: false } }
         : m
     ));
-    const agent = members.find(m => m.account.wallet.toBase58() === walletStr);
-    showToast(`Agent "${agent?.account.role}" deactivated. Access revoked.`);
+    showToast(`Agent deactivated (demo mode)`);
   }
 
-  // ---- REACTIVATE ----
-  function handleReactivate(walletStr: string) {
+  function handleDemoReactivate(walletStr: string) {
     setMembers(prev => prev.map(m =>
       m.account.wallet.toBase58() === walletStr
         ? { ...m, account: { ...m.account, isActive: true } }
         : m
     ));
-    const agent = members.find(m => m.account.wallet.toBase58() === walletStr);
-    showToast(`Agent "${agent?.account.role}" reactivated.`);
+    showToast(`Agent reactivated (demo mode)`);
   }
 
-  // ---- FUND VAULT ----
-  function handleFund(amount: number) {
-    const raw = Math.round(amount * USDC);
-    setVaultBalance(prev => prev + raw);
-    showToast(`Deposited $${amount.toFixed(2)} USDC into vault`);
+  function handleDemoFund(amount: number) {
+    setVaultBalance(prev => prev + Math.round(amount * USDC));
+    showToast(`Deposited $${amount.toFixed(2)} USDC (demo mode)`);
   }
 
-  // ---- PAY AGENT ----
-  function handlePay(walletStr: string, amount: number, memo: string) {
+  function handleDemoPay(walletStr: string, amount: number, memo: string) {
     const raw = Math.round(amount * USDC);
-    if (raw > vaultBalance) {
-      showToast("Insufficient vault balance!");
-      return;
-    }
+    if (raw > vaultBalance) { showToast("Insufficient vault balance!"); return; }
     const agent = members.find(m => m.account.wallet.toBase58() === walletStr);
-    if (!agent || !agent.account.isActive) {
-      showToast("Agent not found or inactive!");
-      return;
-    }
-
-    // Update balances
+    if (!agent || !agent.account.isActive) { showToast("Agent not found or inactive!"); return; }
     setVaultBalance(prev => prev - raw);
     setTotalDisbursed(prev => prev + raw);
     setPaymentCount(prev => prev + 1);
     setMembers(prev => prev.map(m =>
       m.account.wallet.toBase58() === walletStr
-        ? {
-            ...m,
-            account: {
-              ...m.account,
-              totalEarned: new BN(Number(m.account.totalEarned) + raw),
-              deliveriesCompleted: m.account.deliveriesCompleted + 1,
-            },
-          }
+        ? { ...m, account: { ...m.account, totalEarned: new BN(Number(m.account.totalEarned) + raw), deliveriesCompleted: m.account.deliveriesCompleted + 1 } }
         : m
     ));
-
-    // Add receipt
-    const newReceipt = {
-      publicKey: PublicKey.unique(),
-      account: {
-        team: MOCK_TEAM.vault,
-        member: agent.publicKey,
-        milestone: PublicKey.default,
-        recipient: agent.account.wallet,
-        amount: new BN(raw),
-        timestamp: new BN(Math.floor(Date.now() / 1000)),
-        memo,
-        bump: 200,
-      },
-    };
-    setReceipts(prev => [newReceipt, ...prev]);
-    showToast(`Sent $${amount.toFixed(2)} USDC to ${agent.account.role} — tx: ${randomTx()}`);
+    setReceipts(prev => [{ publicKey: PublicKey.unique(), account: { team: MOCK_TEAM.vault, member: agent.publicKey, milestone: PublicKey.default, recipient: agent.account.wallet, amount: new BN(raw), timestamp: new BN(Math.floor(Date.now() / 1000)), memo, bump: 200 } }, ...prev]);
+    showToast(`Sent $${amount.toFixed(2)} USDC to ${agent.account.role} (demo mode)`);
   }
 
-  // ---- ADD AGENT ----
-  function handleAddAgent(role: string, rate: number) {
-    const newMember = {
-      publicKey: PublicKey.unique(),
-      account: {
-        team: MOCK_TEAM.vault,
-        wallet: PublicKey.unique(),
-        role,
-        ratePerDelivery: new BN(Math.round(rate * USDC)),
-        totalEarned: new BN(0),
-        deliveriesCompleted: 0,
-        isActive: true,
-        bump: 200,
-      },
-    };
-    setMembers(prev => [...prev, newMember]);
+  function handleDemoAddAgent(role: string, rate: number) {
+    setMembers(prev => [...prev, { publicKey: PublicKey.unique(), account: { team: MOCK_TEAM.vault, wallet: PublicKey.unique(), role, ratePerDelivery: new BN(Math.round(rate * USDC)), totalEarned: new BN(0), deliveriesCompleted: 0, isActive: true, bump: 200 } }]);
     setShowAddAgent(false);
-    showToast(`Agent "${role}" registered with $${rate}/task limit`);
+    showToast(`Agent "${role}" registered (demo mode)`);
   }
+
+  // Dispatch to demo or live handlers
+  const handleKill = mode === "live" ? handleLiveKill : handleDemoKill;
+  const handleFund = mode === "live" ? handleLiveFund : handleDemoFund;
+  const handlePay = mode === "live" ? handleLivePay : handleDemoPay;
 
   const tabs = [
-    { key: "agents" as const, label: "Agents", icon: "🤖" },
-    { key: "connectors" as const, label: "Connectors", icon: "🔌" },
-    { key: "activity" as const, label: "Activity", icon: "📋" },
-    { key: "sdk" as const, label: "SDK / Docs", icon: "📦" },
+    { key: "agents" as const, label: "Agents", icon: "&#x1F916;" },
+    { key: "connectors" as const, label: "Connectors", icon: "&#x1F50C;" },
+    { key: "activity" as const, label: "Activity", icon: "&#x1F4CB;" },
+    { key: "sdk" as const, label: "SDK / Docs", icon: "&#x1F4E6;" },
   ];
+
+  // Loading state
+  if (liveLoading) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <div className="text-center space-y-3">
+          <div className="w-8 h-8 border-2 border-accent border-t-transparent rounded-full animate-spin mx-auto" />
+          <p className="text-muted text-sm">Loading vault data from devnet...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Live mode: no vault yet
+  if (mode === "live" && !hasVault) {
+    return <CreateVaultView onCreate={handleCreateVault} pending={liveTxPending} />;
+  }
 
   return (
     <div className="animate-fade-in space-y-6 relative">
       {/* Toast */}
       {toast && (
-        <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 bg-accent/90 text-black px-5 py-2.5 rounded-lg text-sm font-medium shadow-lg animate-fade-in">
+        <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 bg-accent/90 text-black px-5 py-2.5 rounded-lg text-sm font-medium shadow-lg animate-fade-in max-w-md text-center">
           {toast}
         </div>
       )}
+
+      {/* Mode indicator */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className={`w-2 h-2 rounded-full ${mode === "live" ? "bg-accent animate-pulse" : "bg-amber-400"}`} />
+          <span className="text-xs font-medium text-muted">
+            {mode === "live" ? (
+              <>Connected to <span className="text-accent">Solana Devnet</span> &mdash; transactions are real</>
+            ) : (
+              <>Demo Mode &mdash; connect wallet for real transactions</>
+            )}
+          </span>
+        </div>
+        {mode === "live" && (
+          <button onClick={loadLiveData} disabled={liveLoading} className="text-xs text-muted hover:text-accent transition-colors">
+            Refresh
+          </button>
+        )}
+      </div>
 
       {/* Stats */}
       <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
@@ -158,16 +285,16 @@ export default function DemoDashboard() {
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-1 bg-surface border border-border rounded-lg p-1">
+      <div className="flex gap-1 bg-surface border border-border rounded-xl p-1">
         {tabs.map(tab => (
           <button
             key={tab.key}
             onClick={() => setActiveTab(tab.key)}
-            className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-md text-sm font-medium transition-colors ${
+            className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-medium transition-colors ${
               activeTab === tab.key ? "bg-surface-2 text-foreground" : "text-muted hover:text-foreground"
             }`}
           >
-            <span>{tab.icon}</span>
+            <span dangerouslySetInnerHTML={{ __html: tab.icon }} />
             <span className="hidden sm:inline">{tab.label}</span>
           </button>
         ))}
@@ -187,84 +314,96 @@ export default function DemoDashboard() {
               </button>
             </div>
 
-            {/* Add Agent Form */}
-            {showAddAgent && <AddAgentForm onAdd={handleAddAgent} />}
+            {showAddAgent && (
+              mode === "live"
+                ? <LiveAddAgentForm onAdd={handleLiveRegister} pending={liveTxPending} onCancel={() => setShowAddAgent(false)} />
+                : <DemoAddAgentForm onAdd={handleDemoAddAgent} />
+            )}
 
-            {/* Agent Cards */}
-            {members.map(m => {
-              const addr = m.account.wallet.toBase58();
-              const short = addr.slice(0, 4) + "..." + addr.slice(-4);
-              const spent = Number(m.account.totalEarned);
-              const pctUsed = spent / (spent + 10_000 * USDC) * 100;
-              return (
-                <div key={addr} className="bg-surface border border-border rounded-xl p-4 hover:border-border/80 transition-colors">
-                  <div className="flex items-center justify-between mb-3">
-                    <div className="flex items-center gap-3">
-                      <div className={`w-2.5 h-2.5 rounded-full ${m.account.isActive ? "bg-accent animate-pulse" : "bg-red-400"}`} />
+            {members.length === 0 ? (
+              <div className="bg-surface border border-border rounded-xl p-8 text-center text-muted text-sm">
+                No agents registered yet. Click &quot;+ Register Agent&quot; to add one.
+              </div>
+            ) : (
+              members.map(m => {
+                const addr = m.account.wallet.toBase58();
+                const short = addr.slice(0, 4) + "..." + addr.slice(-4);
+                const spent = Number(m.account.totalEarned);
+                const limit = Number(m.account.ratePerDelivery);
+                const pctUsed = limit > 0 ? (spent / (limit * 10)) * 100 : 0;
+                return (
+                  <div key={addr} className="bg-surface border border-border rounded-xl p-4 hover:border-border/80 transition-colors">
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center gap-3">
+                        <div className={`w-2.5 h-2.5 rounded-full ${m.account.isActive ? "bg-accent animate-pulse" : "bg-red-400"}`} />
+                        <div>
+                          <span className="font-medium text-sm">{m.account.role}</span>
+                          <span className="text-xs font-mono text-muted ml-2">{short}</span>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {m.account.isActive ? (
+                          <>
+                            <span className="text-[10px] bg-accent/10 text-accent px-2 py-0.5 rounded-full">ACTIVE</span>
+                            <button
+                              onClick={() => handleKill(addr)}
+                              disabled={liveTxPending}
+                              className="text-xs text-red-400 hover:text-red-300 px-2 py-1 border border-red-400/20 rounded-lg hover:bg-red-400/10 transition-colors disabled:opacity-50"
+                            >
+                              Kill Switch
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <span className="text-[10px] bg-red-400/10 text-red-400 px-2 py-0.5 rounded-full">KILLED</span>
+                            {mode === "demo" && (
+                              <button
+                                onClick={() => handleDemoReactivate(addr)}
+                                className="text-xs text-accent hover:text-accent-dim px-2 py-1 border border-accent/20 rounded-lg hover:bg-accent/10 transition-colors"
+                              >
+                                Reactivate
+                              </button>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-3 gap-4 text-xs">
                       <div>
-                        <span className="font-medium text-sm">{m.account.role}</span>
-                        <span className="text-xs font-mono text-muted ml-2">{short}</span>
+                        <span className="text-muted">Per-task limit</span>
+                        <p className="font-medium mt-0.5">{formatUsdc(limit)}</p>
+                      </div>
+                      <div>
+                        <span className="text-muted">Total spent</span>
+                        <p className="font-medium mt-0.5 text-accent">{formatUsdc(spent)}</p>
+                      </div>
+                      <div>
+                        <span className="text-muted">Tasks completed</span>
+                        <p className="font-medium mt-0.5">{m.account.deliveriesCompleted}</p>
                       </div>
                     </div>
-                    <div className="flex items-center gap-2">
-                      {m.account.isActive ? (
-                        <>
-                          <span className="text-[10px] bg-accent/10 text-accent px-2 py-0.5 rounded-full">ACTIVE</span>
-                          <button
-                            onClick={() => handleKill(addr)}
-                            className="text-xs text-red-400 hover:text-red-300 px-2 py-1 border border-red-400/20 rounded-lg hover:bg-red-400/10 transition-colors"
-                          >
-                            Kill Switch
-                          </button>
-                        </>
-                      ) : (
-                        <>
-                          <span className="text-[10px] bg-red-400/10 text-red-400 px-2 py-0.5 rounded-full">KILLED</span>
-                          <button
-                            onClick={() => handleReactivate(addr)}
-                            className="text-xs text-accent hover:text-accent-dim px-2 py-1 border border-accent/20 rounded-lg hover:bg-accent/10 transition-colors"
-                          >
-                            Reactivate
-                          </button>
-                        </>
-                      )}
-                    </div>
+                    {m.account.isActive && (
+                      <div className="mt-3">
+                        <div className="flex justify-between text-[10px] text-muted mb-1">
+                          <span>Budget utilization</span>
+                          <span>{Math.min(pctUsed, 100).toFixed(0)}%</span>
+                        </div>
+                        <div className="h-1.5 bg-surface-2 rounded-full overflow-hidden">
+                          <div className="h-full bg-accent rounded-full transition-all" style={{ width: `${Math.min(pctUsed, 100)}%` }} />
+                        </div>
+                      </div>
+                    )}
                   </div>
-                  <div className="grid grid-cols-3 gap-4 text-xs">
-                    <div>
-                      <span className="text-muted">Per-task limit</span>
-                      <p className="font-medium mt-0.5">{formatUsdc(Number(m.account.ratePerDelivery))}</p>
-                    </div>
-                    <div>
-                      <span className="text-muted">Total spent</span>
-                      <p className="font-medium mt-0.5 text-accent">{formatUsdc(spent)}</p>
-                    </div>
-                    <div>
-                      <span className="text-muted">Tasks completed</span>
-                      <p className="font-medium mt-0.5">{m.account.deliveriesCompleted}</p>
-                    </div>
-                  </div>
-                  {m.account.isActive && (
-                    <div className="mt-3">
-                      <div className="flex justify-between text-[10px] text-muted mb-1">
-                        <span>Budget utilization</span>
-                        <span>{pctUsed.toFixed(0)}%</span>
-                      </div>
-                      <div className="h-1.5 bg-surface-2 rounded-full overflow-hidden">
-                        <div className="h-full bg-accent rounded-full transition-all" style={{ width: `${Math.min(pctUsed, 100)}%` }} />
-                      </div>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+                );
+              })
+            )}
           </div>
 
           {/* Sidebar */}
           <div className="space-y-4">
-            <FundVaultCard onFund={handleFund} />
+            <FundVaultCard onFund={handleFund} pending={liveTxPending} />
             <GlobalLimitsCard showEdit={showEditLimits} setShowEdit={setShowEditLimits} onToast={showToast} />
-            <QuickPayCard agents={activeAgents} onPay={handlePay} />
+            <QuickPayCard agents={activeAgents} onPay={handlePay} pending={liveTxPending} isLive={mode === "live"} />
             <LiveFeedCard receipts={receipts} />
           </div>
         </div>
@@ -338,21 +477,6 @@ export default function DemoDashboard() {
                     <div className="flex gap-2 pt-1">
                       <button
                         onClick={() => {
-                          const newVal = prompt(`Edit config for ${c.name} (JSON):`, JSON.stringify(c.config));
-                          if (newVal) {
-                            try {
-                              const parsed = JSON.parse(newVal);
-                              setConnectors(connectors.map(cc => cc.id === c.id ? { ...cc, config: parsed } : cc));
-                              showToast(`${c.name} config updated`);
-                            } catch { showToast("Invalid JSON"); }
-                          }
-                        }}
-                        className="flex-1 text-xs bg-surface-2 border border-border rounded-lg py-1.5 hover:border-accent transition-colors"
-                      >
-                        Edit Config
-                      </button>
-                      <button
-                        onClick={() => {
                           setConnectors(connectors.map(cc =>
                             cc.id === c.id ? { ...cc, enabled: !cc.enabled, status: cc.enabled ? "disconnected" : "connected" } : cc
                           ));
@@ -393,7 +517,7 @@ export default function DemoDashboard() {
             <span className="text-xs text-muted">{receipts.length} transactions</span>
           </div>
           {receipts.length === 0 ? (
-            <div className="p-8 text-center text-muted">No transactions yet. Pay an agent to see receipts here.</div>
+            <div className="p-8 text-center text-muted text-sm">No transactions yet. Pay an agent to see receipts here.</div>
           ) : (
             <div className="divide-y divide-border">
               {receipts.map((r, i) => {
@@ -435,7 +559,7 @@ export default function DemoDashboard() {
       {activeTab === "sdk" && (
         <div className="space-y-6">
           <div>
-            <h3 className="font-semibold">SDK & Integration Docs</h3>
+            <h3 className="font-semibold">SDK &amp; Integration Docs</h3>
             <p className="text-xs text-muted mt-1">Real connectors with lifecycle hooks. Connect any AI agent to your vault in minutes.</p>
           </div>
           <CodeBlock title="Install" code={SDK_SNIPPETS.install} />
@@ -444,11 +568,11 @@ export default function DemoDashboard() {
           <div className="border-t border-border pt-4">
             <h4 className="font-semibold text-sm mb-3 text-accent">Connector Integrations</h4>
           </div>
-          <CodeBlock title="x402 / Pay.sh — Budget-Controlled API Payments" code={SDK_SNIPPETS.x402Wrap} />
-          <CodeBlock title="ElizaOS Plugin — 3 Agent Actions" code={SDK_SNIPPETS.elizaPlugin} />
+          <CodeBlock title="x402 / Pay.sh &mdash; Budget-Controlled API Payments" code={SDK_SNIPPETS.x402Wrap} />
+          <CodeBlock title="ElizaOS Plugin &mdash; 3 Agent Actions" code={SDK_SNIPPETS.elizaPlugin} />
           <CodeBlock title="LangChain / Vercel AI SDK Tool" code={SDK_SNIPPETS.langchainTool} />
-          <CodeBlock title="Solana Agent Kit — agentVaultPay()" code={SDK_SNIPPETS.sakAction} />
-          <CodeBlock title="Webhook Monitor — Real-time Notifications" code={SDK_SNIPPETS.webhookSetup} />
+          <CodeBlock title="Solana Agent Kit &mdash; agentVaultPay()" code={SDK_SNIPPETS.sakAction} />
+          <CodeBlock title="Webhook Monitor &mdash; Real-time Notifications" code={SDK_SNIPPETS.webhookSetup} />
           <CodeBlock title="Build a Custom Connector" code={SDK_SNIPPETS.customConnector} />
         </div>
       )}
@@ -457,6 +581,40 @@ export default function DemoDashboard() {
 }
 
 // ===== SUB-COMPONENTS =====
+
+function CreateVaultView({ onCreate, pending }: { onCreate: (name: string) => void; pending: boolean }) {
+  const [name, setName] = useState("");
+  return (
+    <div className="flex items-center justify-center py-20 animate-fade-in">
+      <div className="bg-surface border border-border rounded-2xl p-8 max-w-md w-full space-y-6 text-center">
+        <div className="w-16 h-16 rounded-full bg-accent/10 flex items-center justify-center mx-auto text-3xl">
+          &#x1F3E6;
+        </div>
+        <div>
+          <h2 className="text-xl font-bold">Create Your Agent Vault</h2>
+          <p className="text-sm text-muted mt-2">Deploy a USDC treasury on Solana devnet for your AI agents.</p>
+        </div>
+        <div>
+          <input
+            type="text"
+            value={name}
+            onChange={e => setName(e.target.value)}
+            placeholder="Vault name (e.g. AI Swarm Alpha)"
+            className="w-full bg-surface-2 border border-border rounded-xl px-4 py-3 text-sm text-foreground placeholder:text-muted/50 focus:outline-none focus:border-accent transition-colors"
+          />
+        </div>
+        <button
+          onClick={() => { if (name) onCreate(name); }}
+          disabled={!name || pending}
+          className="w-full bg-accent text-black font-semibold py-3 rounded-xl text-sm hover:bg-accent-dim transition-colors disabled:opacity-50"
+        >
+          {pending ? "Creating on-chain..." : "Create Vault"}
+        </button>
+        <p className="text-[10px] text-muted">This creates a real on-chain vault. You need SOL for gas fees.</p>
+      </div>
+    </div>
+  );
+}
 
 function StatCard({ label, value, accent }: { label: string; value: string; accent?: boolean }) {
   return (
@@ -467,12 +625,12 @@ function StatCard({ label, value, accent }: { label: string; value: string; acce
   );
 }
 
-function AddAgentForm({ onAdd }: { onAdd: (role: string, rate: number) => void }) {
+function DemoAddAgentForm({ onAdd }: { onAdd: (role: string, rate: number) => void }) {
   const [role, setRole] = useState("");
   const [rate, setRate] = useState("");
   return (
     <div className="bg-surface border-2 border-accent/30 rounded-xl p-4 space-y-3 animate-fade-in">
-      <h4 className="font-semibold text-sm">Register New Agent</h4>
+      <h4 className="font-semibold text-sm">Register New Agent (Demo)</h4>
       <div className="grid grid-cols-2 gap-3">
         <input type="text" value={role} onChange={e => setRole(e.target.value)} placeholder="Role (e.g. Research Agent)"
           className="bg-surface-2 border border-border rounded-lg px-3 py-2 text-sm text-foreground placeholder:text-muted/50 focus:outline-none focus:border-accent" />
@@ -488,7 +646,34 @@ function AddAgentForm({ onAdd }: { onAdd: (role: string, rate: number) => void }
   );
 }
 
-function FundVaultCard({ onFund }: { onFund: (amount: number) => void }) {
+function LiveAddAgentForm({ onAdd, pending, onCancel }: { onAdd: (wallet: string, role: string, rate: number) => void; pending: boolean; onCancel: () => void }) {
+  const [walletAddr, setWalletAddr] = useState("");
+  const [role, setRole] = useState("");
+  const [rate, setRate] = useState("");
+  return (
+    <div className="bg-surface border-2 border-accent/30 rounded-xl p-4 space-y-3 animate-fade-in">
+      <div className="flex items-center justify-between">
+        <h4 className="font-semibold text-sm">Register Agent (On-Chain)</h4>
+        <span className="text-[10px] text-accent bg-accent/10 px-2 py-0.5 rounded-full">LIVE</span>
+      </div>
+      <input type="text" value={walletAddr} onChange={e => setWalletAddr(e.target.value)} placeholder="Agent wallet address (Solana pubkey)"
+        className="w-full bg-surface-2 border border-border rounded-lg px-3 py-2 text-sm font-mono text-foreground placeholder:text-muted/50 focus:outline-none focus:border-accent" />
+      <div className="grid grid-cols-2 gap-3">
+        <input type="text" value={role} onChange={e => setRole(e.target.value)} placeholder="Role (e.g. Research Agent)"
+          className="bg-surface-2 border border-border rounded-lg px-3 py-2 text-sm text-foreground placeholder:text-muted/50 focus:outline-none focus:border-accent" />
+        <input type="number" value={rate} onChange={e => setRate(e.target.value)} placeholder="Budget per task (USDC)"
+          className="bg-surface-2 border border-border rounded-lg px-3 py-2 text-sm text-foreground placeholder:text-muted/50 focus:outline-none focus:border-accent" />
+      </div>
+      <button onClick={() => { if (walletAddr && role && rate) onAdd(walletAddr, role, parseFloat(rate)); }}
+        disabled={!walletAddr || !role || !rate || pending}
+        className="w-full bg-accent text-black font-semibold py-2 rounded-lg text-sm hover:bg-accent-dim transition-colors disabled:opacity-50">
+        {pending ? "Submitting tx..." : "Register on Devnet"}
+      </button>
+    </div>
+  );
+}
+
+function FundVaultCard({ onFund, pending }: { onFund: (amount: number) => void; pending: boolean }) {
   const [amount, setAmount] = useState("");
   return (
     <div className="bg-surface border border-border rounded-xl p-4 space-y-3">
@@ -500,9 +685,9 @@ function FundVaultCard({ onFund }: { onFund: (amount: number) => void }) {
         <span className="absolute right-3 top-1/2 -translate-y-1/2 text-muted text-xs">USDC</span>
       </div>
       <button onClick={() => { if (amount) { onFund(parseFloat(amount)); setAmount(""); } }}
-        disabled={!amount}
+        disabled={!amount || pending}
         className="w-full bg-accent text-black font-semibold py-2 rounded-lg text-sm hover:bg-accent-dim transition-colors disabled:opacity-50">
-        Deposit USDC
+        {pending ? "Processing..." : "Deposit USDC"}
       </button>
     </div>
   );
@@ -518,7 +703,7 @@ function GlobalLimitsCard({ showEdit, setShowEdit, onToast }: { showEdit: boolea
       {!showEdit ? (
         <>
           <div className="space-y-2">
-            <div className="flex justify-between text-xs"><span className="text-muted">Daily cap (all agents)</span><span className="font-medium">${dailyCap}</span></div>
+            <div className="flex justify-between text-xs"><span className="text-muted">Daily cap</span><span className="font-medium">${dailyCap}</span></div>
             <div className="flex justify-between text-xs"><span className="text-muted">Per-tx max</span><span className="font-medium">${perTx}</span></div>
             <div className="flex justify-between text-xs"><span className="text-muted">Auto-approve under</span><span className="font-medium text-accent">${autoApprove}</span></div>
           </div>
@@ -548,33 +733,39 @@ function GlobalLimitsCard({ showEdit, setShowEdit, onToast }: { showEdit: boolea
   );
 }
 
-function QuickPayCard({ agents, onPay }: { agents: any[]; onPay: (wallet: string, amount: number, memo: string) => void }) {
+function QuickPayCard({ agents, onPay, pending, isLive }: { agents: any[]; onPay: (wallet: string, amount: number, memo: string) => void; pending: boolean; isLive: boolean }) {
   const [sel, setSel] = useState("");
   const [amount, setAmount] = useState("");
   const [memo, setMemo] = useState("");
   return (
     <div className="bg-surface border border-border rounded-xl p-4 space-y-3">
       <h3 className="font-semibold text-sm">Quick Pay</h3>
-      <select value={sel} onChange={e => setSel(e.target.value)}
-        className="w-full bg-surface-2 border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:border-accent appearance-none">
-        <option value="">Select agent</option>
-        {agents.map(m => {
-          const addr = m.account.wallet.toBase58();
-          return <option key={addr} value={addr}>{m.account.role} ({addr.slice(0, 4)}...)</option>;
-        })}
-      </select>
-      <div className="relative">
-        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-sm">$</span>
-        <input type="number" value={amount} onChange={e => setAmount(e.target.value)} placeholder="0.00"
-          className="w-full bg-surface-2 border border-border rounded-lg pl-7 pr-3 py-2 text-sm text-foreground placeholder:text-muted/50 focus:outline-none focus:border-accent" />
-      </div>
-      <input type="text" value={memo} onChange={e => setMemo(e.target.value)} placeholder="Memo (e.g. API batch #47)"
-        className="w-full bg-surface-2 border border-border rounded-lg px-3 py-2 text-sm text-foreground placeholder:text-muted/50 focus:outline-none focus:border-accent" />
-      <button onClick={() => { if (sel && amount) { onPay(sel, parseFloat(amount), memo || "Direct payment"); setAmount(""); setMemo(""); setSel(""); } }}
-        disabled={!sel || !amount}
-        className="w-full bg-accent text-black font-semibold py-2 rounded-lg text-sm hover:bg-accent-dim transition-colors disabled:opacity-50">
-        Send Payment
-      </button>
+      {isLive && agents.length === 0 ? (
+        <p className="text-xs text-muted">Register agents first to make payments.</p>
+      ) : (
+        <>
+          <select value={sel} onChange={e => setSel(e.target.value)}
+            className="w-full bg-surface-2 border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:border-accent appearance-none">
+            <option value="">Select agent</option>
+            {agents.map(m => {
+              const addr = m.account.wallet.toBase58();
+              return <option key={addr} value={addr}>{m.account.role} ({addr.slice(0, 4)}...)</option>;
+            })}
+          </select>
+          <div className="relative">
+            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-sm">$</span>
+            <input type="number" value={amount} onChange={e => setAmount(e.target.value)} placeholder="0.00"
+              className="w-full bg-surface-2 border border-border rounded-lg pl-7 pr-3 py-2 text-sm text-foreground placeholder:text-muted/50 focus:outline-none focus:border-accent" />
+          </div>
+          <input type="text" value={memo} onChange={e => setMemo(e.target.value)} placeholder="Memo (e.g. API batch #47)"
+            className="w-full bg-surface-2 border border-border rounded-lg px-3 py-2 text-sm text-foreground placeholder:text-muted/50 focus:outline-none focus:border-accent" />
+          <button onClick={() => { if (sel && amount) { onPay(sel, parseFloat(amount), memo || "Direct payment"); setAmount(""); setMemo(""); setSel(""); } }}
+            disabled={!sel || !amount || pending}
+            className="w-full bg-accent text-black font-semibold py-2 rounded-lg text-sm hover:bg-accent-dim transition-colors disabled:opacity-50">
+            {pending ? "Sending tx..." : "Send Payment"}
+          </button>
+        </>
+      )}
     </div>
   );
 }
@@ -590,6 +781,7 @@ function LiveFeedCard({ receipts }: { receipts: any[] }) {
             <span className="text-accent font-medium">{formatUsdc(Number(r.account.amount))}</span>
           </div>
         ))}
+        {receipts.length === 0 && <p className="text-xs text-muted">No activity yet</p>}
       </div>
     </div>
   );
@@ -600,11 +792,11 @@ function CodeBlock({ title, code }: { title: string; code: string }) {
   return (
     <div className="bg-surface border border-border rounded-xl overflow-hidden">
       <div className="flex items-center justify-between px-4 py-2 border-b border-border">
-        <span className="text-xs font-medium">{title}</span>
+        <span className="text-xs font-medium" dangerouslySetInnerHTML={{ __html: title }} />
         <button onClick={() => { navigator.clipboard.writeText(code); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
           className="text-[10px] text-muted hover:text-accent transition-colors">{copied ? "Copied!" : "Copy"}</button>
       </div>
-      <pre className="p-4 text-xs font-mono overflow-x-auto leading-relaxed" style={{ color: "#a6e3a1", backgroundColor: "#111" }}>
+      <pre className="p-4 text-xs font-mono overflow-x-auto leading-relaxed" style={{ color: "#a6e3a1", backgroundColor: "#0d0d0d" }}>
         <code>{code}</code>
       </pre>
     </div>
@@ -616,8 +808,6 @@ function AddCustomConnector({ onAdd, onCancel }: { onAdd: (c: AgentVaultConnecto
   const [description, setDescription] = useState("");
   const [icon, setIcon] = useState("🔌");
   const [connType, setConnType] = useState<"ai-framework" | "payment-rail" | "monitoring" | "custom">("custom");
-  const [fields, setFields] = useState<ConnectorConfigField[]>([]);
-  const [fKey, setFKey] = useState(""); const [fLabel, setFLabel] = useState(""); const [fType, setFType] = useState<"text"|"number"|"boolean"|"select">("text");
   const [showCode, setShowCode] = useState(false);
   const [maxAmount, setMaxAmount] = useState("100");
   const [webhookUrl, setWebhookUrl] = useState("");
@@ -626,49 +816,19 @@ function AddCustomConnector({ onAdd, onCancel }: { onAdd: (c: AgentVaultConnecto
   const connId = name ? `custom-${name.toLowerCase().replace(/\s+/g, "-")}` : "custom-my-connector";
 
   function generateCode(): string {
-    const lines: string[] = [];
-    lines.push(`import { CustomConnector } from "@agentvault/sdk";`);
-    lines.push(``);
-    lines.push(`const ${connId.replace(/[^a-zA-Z0-9]/g, "_")} = new CustomConnector(`);
-    lines.push(`  "${connId}",`);
-    lines.push(`  "${name || "My Connector"}",`);
-    lines.push(`  {`);
-    lines.push(`    // Budget enforcement — return { allow: false } to block`);
-    lines.push(`    beforePay: async (agent, amount, memo) => {`);
+    const varName = connId.replace(/[^a-zA-Z0-9]/g, "_");
+    let code = `import { CustomConnector } from "@agentvault/sdk";\n\nconst ${varName} = new CustomConnector(\n  "${connId}",\n  "${name || "My Connector"}",\n  {\n    beforePay: async (agent, amount, memo) => {\n`;
     if (maxAmount) {
-      lines.push(`      const usdc = amount / 1_000_000;`);
-      lines.push(`      if (usdc > ${maxAmount}) {`);
-      lines.push(`        return { allow: false, reason: "Max $${maxAmount} per transaction" };`);
-      lines.push(`      }`);
+      code += `      if (amount / 1_000_000 > ${maxAmount}) {\n        return { allow: false, reason: "Max $${maxAmount} per tx" };\n      }\n`;
     }
-    lines.push(`      return { allow: true };`);
-    lines.push(`    },`);
+    code += `      return { allow: true };\n    },\n`;
     if (webhookUrl) {
-      lines.push(`    // Notify on every payment`);
-      lines.push(`    afterPay: async (receipt) => {`);
-      lines.push(`      await fetch("${webhookUrl}", {`);
-      lines.push(`        method: "POST",`);
-      lines.push(`        headers: { "Content-Type": "application/json" },`);
-      lines.push(`        body: JSON.stringify({`);
-      lines.push(`          agent: receipt.recipient.toBase58(),`);
-      lines.push(`          amount: receipt.amount / 1_000_000,`);
-      lines.push(`          memo: receipt.memo,`);
-      lines.push(`          tx: receipt.txSignature,`);
-      lines.push(`        }),`);
-      lines.push(`      });`);
-      lines.push(`    },`);
+      code += `    afterPay: async (receipt) => {\n      await fetch("${webhookUrl}", {\n        method: "POST",\n        headers: { "Content-Type": "application/json" },\n        body: JSON.stringify({ agent: receipt.recipient.toBase58(), amount: receipt.amount / 1_000_000, memo: receipt.memo, tx: receipt.txSignature }),\n      });\n    },\n`;
     } else {
-      lines.push(`    // Called after every successful payment`);
-      lines.push(`    afterPay: async (receipt) => {`);
-      lines.push(`      console.log("Payment:", receipt.memo, receipt.txSignature);`);
-      lines.push(`    },`);
+      code += `    afterPay: async (receipt) => {\n      console.log("Payment:", receipt.memo, receipt.txSignature);\n    },\n`;
     }
-    lines.push(`  }`);
-    lines.push(`);`);
-    lines.push(``);
-    lines.push(`// Attach to vault — hooks run on every vault.pay()`);
-    lines.push(`vault.connectors.use(${connId.replace(/[^a-zA-Z0-9]/g, "_")});`);
-    return lines.join("\n");
+    code += `  }\n);\n\nvault.connectors.use(${varName});`;
+    return code;
   }
 
   return (
@@ -696,8 +856,6 @@ function AddCustomConnector({ onAdd, onCancel }: { onAdd: (c: AgentVaultConnecto
           <input type="text" value={icon} onChange={e => setIcon(e.target.value)}
             className="w-full bg-surface-2 border border-border rounded-lg px-3 py-2 text-sm text-foreground text-center focus:outline-none focus:border-accent" /></div>
       </div>
-
-      {/* Budget & Webhook Config */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div><label className="text-xs text-muted block mb-1">Max Amount per Tx (USDC)</label>
           <input type="number" value={maxAmount} onChange={e => setMaxAmount(e.target.value)} placeholder="100"
@@ -707,31 +865,6 @@ function AddCustomConnector({ onAdd, onCancel }: { onAdd: (c: AgentVaultConnecto
             className="w-full bg-surface-2 border border-border rounded-lg px-3 py-2 text-sm text-foreground placeholder:text-muted/50 focus:outline-none focus:border-accent" /></div>
       </div>
 
-      {/* Config Fields */}
-      <div>
-        <label className="text-xs text-muted block mb-2">Extra Config Fields</label>
-        {fields.length > 0 && <div className="space-y-1 mb-3">{fields.map((f, i) => (
-          <div key={i} className="flex items-center justify-between bg-surface-2 rounded-lg px-3 py-1.5 text-xs">
-            <span><span className="font-mono text-accent">{f.key}</span><span className="text-muted ml-2">({f.type})</span> — {f.label}</span>
-            <button onClick={() => setFields(fields.filter((_, j) => j !== i))} className="text-red-400 hover:text-red-300">x</button>
-          </div>
-        ))}</div>}
-        <div className="flex gap-2">
-          <input type="text" value={fKey} onChange={e => setFKey(e.target.value)} placeholder="key"
-            className="flex-1 bg-surface-2 border border-border rounded-lg px-3 py-1.5 text-xs font-mono text-foreground placeholder:text-muted/50 focus:outline-none focus:border-accent" />
-          <input type="text" value={fLabel} onChange={e => setFLabel(e.target.value)} placeholder="Label"
-            className="flex-1 bg-surface-2 border border-border rounded-lg px-3 py-1.5 text-xs text-foreground placeholder:text-muted/50 focus:outline-none focus:border-accent" />
-          <select value={fType} onChange={e => setFType(e.target.value as any)}
-            className="bg-surface-2 border border-border rounded-lg px-2 py-1.5 text-xs text-foreground focus:outline-none focus:border-accent">
-            <option value="text">text</option><option value="number">number</option><option value="boolean">bool</option><option value="select">select</option>
-          </select>
-          <button onClick={() => { if (fKey && fLabel) { setFields([...fields, { key: fKey, label: fLabel, type: fType }]); setFKey(""); setFLabel(""); } }}
-            disabled={!fKey || !fLabel}
-            className="bg-surface-2 border border-accent/30 text-accent px-3 py-1.5 rounded-lg text-xs hover:bg-accent/10 transition-colors disabled:opacity-50">Add</button>
-        </div>
-      </div>
-
-      {/* Generated Code Preview */}
       {name && (
         <div>
           <button onClick={() => setShowCode(!showCode)}
@@ -740,7 +873,7 @@ function AddCustomConnector({ onAdd, onCancel }: { onAdd: (c: AgentVaultConnecto
           </button>
           {showCode && (
             <div className="mt-2 relative">
-              <pre className="text-xs font-mono p-4 rounded-lg overflow-x-auto" style={{ color: "#a6e3a1", backgroundColor: "#111" }}>
+              <pre className="text-xs font-mono p-4 rounded-lg overflow-x-auto" style={{ color: "#a6e3a1", backgroundColor: "#0d0d0d" }}>
                 {generateCode()}
               </pre>
               <button
@@ -754,14 +887,11 @@ function AddCustomConnector({ onAdd, onCancel }: { onAdd: (c: AgentVaultConnecto
         </div>
       )}
 
-      <div className="flex gap-3">
-        <button onClick={() => { if (!name) return; onAdd({ id: connId, name, description: description || `Custom ${connType} connector`, icon, type: connType, enabled: true, configFields: fields, config: {}, status: "connected", stats: { totalCalls: 0, totalSpent: 0, lastUsed: null } }); }}
-          disabled={!name}
-          className="flex-1 bg-accent text-black font-semibold py-2.5 rounded-lg text-sm hover:bg-accent-dim transition-colors disabled:opacity-50">
-          Create Connector
-        </button>
-      </div>
-      <p className="text-[10px] text-muted text-center">Creates the connector in your dashboard. Use the generated code to integrate it in your agent&apos;s codebase.</p>
+      <button onClick={() => { if (!name) return; onAdd({ id: connId, name, description: description || `Custom ${connType} connector`, icon, type: connType, enabled: true, configFields: [], config: {}, status: "connected", stats: { totalCalls: 0, totalSpent: 0, lastUsed: null } }); }}
+        disabled={!name}
+        className="w-full bg-accent text-black font-semibold py-2.5 rounded-lg text-sm hover:bg-accent-dim transition-colors disabled:opacity-50">
+        Create Connector
+      </button>
     </div>
   );
 }
@@ -772,9 +902,4 @@ function timeAgo(ts: number): string {
   if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
   if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
   return `${Math.floor(diff / 86400)}d ago`;
-}
-
-function randomTx(): string {
-  const chars = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-  return Array.from({ length: 8 }, () => chars[Math.floor(Math.random() * chars.length)]).join("") + "...";
 }
