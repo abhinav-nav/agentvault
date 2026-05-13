@@ -192,6 +192,11 @@ vault.connectors.use(new CustomConnector("my-limiter", "Trade Limiter", {
 const receipt = await vault.pay(agentWallet, 25_000_000, "GPT-4o API batch");
 ```
 
+## Live Demo
+
+**Frontend**: [https://frontend-two-ebon-49.vercel.app](https://frontend-two-ebon-49.vercel.app)
+**Program**: [View on Solana Explorer](https://explorer.solana.com/address/8g5hMx6AwTUFCrKwuaCfDY468qE4bbHiw8BvdiepUJdo?cluster=devnet)
+
 ## Built for Colosseum Frontier Hackathon 2026
 
 AgentVault fills the gap in Solana's AI agent infrastructure — the budget control and audit layer that sits between autonomous agents and their treasury.

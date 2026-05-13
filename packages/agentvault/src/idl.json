@@ -4,28 +4,28 @@
     "name": "creatorpay",
     "version": "0.1.0",
     "spec": "0.1.0",
-    "description": "CreatorPay — Stablecoin payroll for creator businesses on Solana"
+    "description": "AgentVault — Treasury & budget protocol for AI agents on Solana"
   },
   "docs": [
-    "CreatorPay: Stablecoin payroll protocol for creator businesses on Solana.",
+    "AgentVault: Treasury & budget protocol for autonomous AI agents on Solana.",
     "",
-    "Creators (YouTubers, podcasters, newsletter writers) manage a treasury vault",
-    "and pay their global production team (editors, designers, writers) in USDC",
-    "via milestone-based or recurring disbursements.",
+    "Organizations deploy a USDC vault, register AI agents with per-task",
+    "spending limits, and get on-chain receipts for every payment.",
+    "Kill switch enables instant revocation of rogue agent access.",
     "",
     "Architecture:",
-    "- Team PDA stores creator's team roster + config",
+    "- Team PDA stores the vault admin's agent roster + config",
     "- Vault PDA holds the USDC treasury (token account owned by program)",
-    "- PaymentRecord PDAs track every disbursement on-chain (receipts)",
+    "- PaymentRecord PDAs track every agent payment on-chain (receipts)",
     "- Milestone PDAs enable deliverable-gated payments"
   ],
   "instructions": [
     {
       "name": "add_member",
       "docs": [
-        "Add a contributor to the team. Up to 15 members per team.",
-        "`role` is a label like \"Video Editor\", \"Thumbnail Designer\", etc.",
-        "`wallet` is the contributor's Solana wallet (can be a Privy embedded wallet)."
+        "Register an AI agent to the vault. Up to 15 agents per vault.",
+        "`role` is a label like \"Research Agent\", \"Trading Bot\", etc.",
+        "`wallet` is the agent's Solana wallet."
       ],
       "discriminator": [
         13,
@@ -120,7 +120,7 @@
     {
       "name": "approve_and_pay",
       "docs": [
-        "Creator approves the deliverable → funds auto-release to contributor.",
+        "Vault admin approves the deliverable → funds auto-release to agent.",
         "This is the core payment instruction. Creates an on-chain receipt."
       ],
       "discriminator": [
@@ -193,7 +193,7 @@
         {
           "name": "contributor_token_account",
           "docs": [
-            "The contributor's USDC token account (could be a Privy embedded wallet's ATA)."
+            "The agent's USDC token account."
           ],
           "writable": true
         },
@@ -247,7 +247,7 @@
       "name": "create_milestone",
       "docs": [
         "Create a milestone (deliverable) that must be completed before payment.",
-        "Example: \"Edit YouTube video ep. 47\" or \"Design 5 thumbnails for batch 12\"."
+        "Example: \"Complete API integration task\" or \"Deliver research report batch #12\"."
       ],
       "discriminator": [
         239,
@@ -352,8 +352,8 @@
     {
       "name": "create_team",
       "docs": [
-        "Initialize a creator's team. The creator becomes the authority.",
-        "`team_name` is a human-readable label (e.g., \"Ali Abdaal's Team\")."
+        "Initialize a vault. The creator becomes the authority.",
+        "`team_name` is a human-readable label (e.g., \"My AI Agent Swarm\")."
       ],
       "discriminator": [
         122,
@@ -446,7 +446,7 @@
     {
       "name": "deactivate_member",
       "docs": [
-        "Deactivate a team member (does not delete — preserves history)."
+        "Kill switch — deactivate an agent (does not delete — preserves history)."
       ],
       "discriminator": [
         168,
@@ -499,8 +499,8 @@
     {
       "name": "direct_pay",
       "docs": [
-        "Direct payment without a milestone (for recurring/fixed payments).",
-        "Creator pays a team member directly from the vault."
+        "Direct payment without a milestone (for API calls, task payments, etc.).",
+        "Vault admin pays an agent directly from the vault."
       ],
       "discriminator": [
         11,
@@ -627,7 +627,7 @@
     {
       "name": "fund_vault",
       "docs": [
-        "Fund the team treasury vault with USDC."
+        "Fund the agent vault treasury with USDC."
       ],
       "discriminator": [
         26,
@@ -712,7 +712,7 @@
     {
       "name": "submit_deliverable",
       "docs": [
-        "Contributor submits deliverable proof (a URI to the work)."
+        "Agent submits deliverable proof (a URI to the work)."
       ],
       "discriminator": [
         38,

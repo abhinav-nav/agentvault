@@ -17,9 +17,9 @@ describe("creatorpay", () => {
 
   const creator = provider.wallet;
 
-  // Contributors (simulating non-crypto-native team members with embedded wallets)
-  const editor = anchor.web3.Keypair.generate(); // "Video editor in Manila"
-  const designer = anchor.web3.Keypair.generate(); // "Thumbnail designer in Lagos"
+  // AI Agents (simulating autonomous agents with their own wallets)
+  const editor = anchor.web3.Keypair.generate(); // Research Agent
+  const designer = anchor.web3.Keypair.generate(); // Trading Bot
 
   let mint: anchor.web3.PublicKey;
   let creatorTokenAccount: anchor.web3.PublicKey;
@@ -32,11 +32,11 @@ describe("creatorpay", () => {
 
   const USDC_DECIMALS = 6;
   const INITIAL_FUNDING = 10_000 * 10 ** USDC_DECIMALS; // 10,000 USDC
-  const EDITOR_RATE = 150 * 10 ** USDC_DECIMALS; // $150 per video edit
-  const DESIGNER_RATE = 50 * 10 ** USDC_DECIMALS; // $50 per thumbnail batch
+  const EDITOR_RATE = 150 * 10 ** USDC_DECIMALS; // $150 per-task budget for Research Agent
+  const DESIGNER_RATE = 50 * 10 ** USDC_DECIMALS; // $50 per-task budget for Trading Bot
 
   before(async () => {
-    // Airdrop SOL to contributors for rent
+    // Airdrop SOL to agents for rent
     const airdropEditor = await provider.connection.requestAirdrop(
       editor.publicKey,
       1 * anchor.web3.LAMPORTS_PER_SOL
@@ -80,7 +80,7 @@ describe("creatorpay", () => {
       designer.publicKey
     );
 
-    // Mint mock USDC to creator (simulating a funded creator treasury)
+    // Mint mock USDC to vault admin (simulating a funded agent treasury)
     await mintTo(
       provider.connection,
       (creator as any).payer,
@@ -120,9 +120,9 @@ describe("creatorpay", () => {
     );
   });
 
-  it("Creates a creator team with USDC treasury vault", async () => {
+  it("Creates an agent vault with USDC treasury", async () => {
     await program.methods
-      .createTeam("Ali Abdaal's Production Team")
+      .createTeam("AI Agent Swarm Alpha")
       .accounts({
         creator: creator.publicKey,
         team: teamPda,
@@ -135,15 +135,15 @@ describe("creatorpay", () => {
       .rpc();
 
     const team = await program.account.team.fetch(teamPda);
-    assert.equal(team.name, "Ali Abdaal's Production Team");
+    assert.equal(team.name, "AI Agent Swarm Alpha");
     assert.equal(team.memberCount, 0);
     assert.equal(team.totalDisbursed.toNumber(), 0);
-    console.log("  ✅ Team created:", team.name);
+    console.log("  ✅ Vault created:", team.name);
   });
 
-  it("Adds video editor (Manila) to the team", async () => {
+  it("Registers Research Agent to the vault", async () => {
     await program.methods
-      .addMember(editor.publicKey, "Video Editor", new anchor.BN(EDITOR_RATE))
+      .addMember(editor.publicKey, "Research Agent", new anchor.BN(EDITOR_RATE))
       .accounts({
         creator: creator.publicKey,
         team: teamPda,
@@ -154,20 +154,20 @@ describe("creatorpay", () => {
       .rpc();
 
     const member = await program.account.member.fetch(editorMemberPda);
-    assert.equal(member.role, "Video Editor");
+    assert.equal(member.role, "Research Agent");
     assert.equal(member.ratePerDelivery.toNumber(), EDITOR_RATE);
     assert.equal(member.isActive, true);
 
     const team = await program.account.team.fetch(teamPda);
     assert.equal(team.memberCount, 1);
-    console.log("  ✅ Video Editor added — rate: $150/video");
+    console.log("  ✅ Research Agent registered — budget: $150/task");
   });
 
-  it("Adds thumbnail designer (Lagos) to the team", async () => {
+  it("Registers Trading Bot to the vault", async () => {
     await program.methods
       .addMember(
         designer.publicKey,
-        "Thumbnail Designer",
+        "Trading Bot",
         new anchor.BN(DESIGNER_RATE)
       )
       .accounts({
@@ -180,15 +180,15 @@ describe("creatorpay", () => {
       .rpc();
 
     const member = await program.account.member.fetch(designerMemberPda);
-    assert.equal(member.role, "Thumbnail Designer");
+    assert.equal(member.role, "Trading Bot");
     assert.equal(member.isActive, true);
 
     const team = await program.account.team.fetch(teamPda);
     assert.equal(team.memberCount, 2);
-    console.log("  ✅ Thumbnail Designer added — rate: $50/batch");
+    console.log("  ✅ Trading Bot registered — budget: $50/task");
   });
 
-  it("Funds the team treasury with 10,000 USDC", async () => {
+  it("Funds the agent vault with 10,000 USDC", async () => {
     await program.methods
       .fundVault(new anchor.BN(INITIAL_FUNDING))
       .accounts({
@@ -203,10 +203,10 @@ describe("creatorpay", () => {
 
     const vaultAccount = await getAccount(provider.connection, vaultPda);
     assert.equal(Number(vaultAccount.amount), INITIAL_FUNDING);
-    console.log("  ✅ Treasury funded: $10,000 USDC");
+    console.log("  ✅ Vault funded: $10,000 USDC");
   });
 
-  it("Creates a milestone: 'Edit YouTube ep. 47'", async () => {
+  it("Creates a milestone: 'Complete API integration task'", async () => {
     const team = await program.account.team.fetch(teamPda);
     const paymentCount = team.paymentCount;
 
@@ -224,7 +224,7 @@ describe("creatorpay", () => {
 
     await program.methods
       .createMilestone(
-        "Edit YouTube ep. 47 — final cut with color grade",
+        "Complete API integration — OpenAI + Anthropic endpoints",
         new anchor.BN(EDITOR_RATE),
         new anchor.BN(deadline)
       )
@@ -241,24 +241,24 @@ describe("creatorpay", () => {
     const milestone = await program.account.milestone.fetch(milestonePda);
     assert.equal(
       milestone.description,
-      "Edit YouTube ep. 47 — final cut with color grade"
+      "Complete API integration — OpenAI + Anthropic endpoints"
     );
     assert.equal(milestone.amount.toNumber(), EDITOR_RATE);
     assert.deepEqual(milestone.status, { pending: {} });
     console.log(
-      '  ✅ Milestone created: "Edit YouTube ep. 47" — $150 USDC'
+      '  ✅ Milestone created: "Complete API integration" — $150 USDC'
     );
 
     // Store for later tests
     (global as any).milestonePda = milestonePda;
   });
 
-  it("Editor submits deliverable proof", async () => {
+  it("Research Agent submits deliverable proof", async () => {
     const milestonePda = (global as any).milestonePda;
 
     await program.methods
       .submitDeliverable(
-        "https://drive.google.com/file/d/abc123/final-cut-ep47.mp4"
+        "https://github.com/org/repo/pull/47"
       )
       .accounts({
         contributor: editor.publicKey,
@@ -272,12 +272,12 @@ describe("creatorpay", () => {
     assert.deepEqual(milestone.status, { submitted: {} });
     assert.equal(
       milestone.proofUri,
-      "https://drive.google.com/file/d/abc123/final-cut-ep47.mp4"
+      "https://github.com/org/repo/pull/47"
     );
-    console.log("  ✅ Editor submitted deliverable proof (Google Drive link)");
+    console.log("  ✅ Research Agent submitted deliverable proof (GitHub PR)");
   });
 
-  it("Creator approves → auto-pays $150 USDC to editor", async () => {
+  it("Vault admin approves → auto-pays $150 USDC to Research Agent", async () => {
     const milestonePda = (global as any).milestonePda;
     const team = await program.account.team.fetch(teamPda);
     const paymentCount = team.paymentCount;
@@ -335,10 +335,10 @@ describe("creatorpay", () => {
     assert.equal(updatedTeam.totalDisbursed.toNumber(), EDITOR_RATE);
     assert.equal(updatedTeam.paymentCount.toNumber(), 1);
 
-    console.log("  ✅ $150 USDC sent to editor — on-chain receipt created");
+    console.log("  ✅ $150 USDC sent to Research Agent — on-chain receipt created");
   });
 
-  it("Direct payment: $50 USDC to designer for thumbnail batch", async () => {
+  it("Direct payment: $50 USDC to Trading Bot for API batch", async () => {
     const team = await program.account.team.fetch(teamPda);
     const paymentCount = team.paymentCount;
 
@@ -359,7 +359,7 @@ describe("creatorpay", () => {
     await program.methods
       .directPay(
         new anchor.BN(DESIGNER_RATE),
-        "Thumbnail batch #12 — 5 thumbnails delivered"
+        "Jupiter swap batch #12 — 5 trades executed"
       )
       .accounts({
         creator: creator.publicKey,
@@ -384,7 +384,7 @@ describe("creatorpay", () => {
     assert.equal(received, DESIGNER_RATE);
 
     const receipt = await program.account.paymentRecord.fetch(receiptPda);
-    assert.equal(receipt.memo, "Thumbnail batch #12 — 5 thumbnails delivered");
+    assert.equal(receipt.memo, "Jupiter swap batch #12 — 5 trades executed");
 
     const updatedTeam = await program.account.team.fetch(teamPda);
     assert.equal(
@@ -394,21 +394,21 @@ describe("creatorpay", () => {
     assert.equal(updatedTeam.paymentCount.toNumber(), 2);
 
     console.log(
-      "  ✅ $50 USDC direct payment to designer — on-chain receipt created"
+      "  ✅ $50 USDC direct payment to Trading Bot — on-chain receipt created"
     );
   });
 
-  it("Verifies treasury balance after payments", async () => {
+  it("Verifies vault balance after payments", async () => {
     const vaultAccount = await getAccount(provider.connection, vaultPda);
     const remaining =
       INITIAL_FUNDING - EDITOR_RATE - DESIGNER_RATE;
     assert.equal(Number(vaultAccount.amount), remaining);
     console.log(
-      `  ✅ Treasury balance: $${remaining / 10 ** USDC_DECIMALS} USDC remaining`
+      `  ✅ Vault balance: $${remaining / 10 ** USDC_DECIMALS} USDC remaining`
     );
   });
 
-  it("Deactivates a team member", async () => {
+  it("Kill switch — deactivates a rogue agent", async () => {
     await program.methods
       .deactivateMember()
       .accounts({
@@ -424,7 +424,7 @@ describe("creatorpay", () => {
     // Total earned is preserved
     assert.equal(member.totalEarned.toNumber(), DESIGNER_RATE);
     console.log(
-      "  ✅ Designer deactivated — payment history preserved on-chain"
+      "  ✅ Trading Bot killed — payment history preserved on-chain"
     );
   });
 });

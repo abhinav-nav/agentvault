@@ -14,7 +14,7 @@ import IDL_JSON from "./creatorpay.json";
 
 const IDL = IDL_JSON as Idl;
 
-// Wallet adapter interface for Privy
+// Wallet adapter interface
 interface WalletAdapter {
   publicKey: PublicKey;
   signTransaction<T extends Transaction | VersionedTransaction>(tx: T): Promise<T>;

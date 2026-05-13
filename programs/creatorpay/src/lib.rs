@@ -3,24 +3,25 @@ use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 
 declare_id!("8g5hMx6AwTUFCrKwuaCfDY468qE4bbHiw8BvdiepUJdo");
 
-/// CreatorPay: Stablecoin payroll protocol for creator businesses on Solana.
+/// AgentVault: Treasury & budget protocol for autonomous AI agents on Solana.
 ///
-/// Creators (YouTubers, podcasters, newsletter writers) manage a treasury vault
-/// and pay their global production team (editors, designers, writers) in USDC
-/// via milestone-based or recurring disbursements.
+/// Organizations deploy a USDC vault, register AI agents with per-task
+/// spending limits, and get on-chain receipts for every payment.
+/// Kill switch enables instant revocation of rogue agent access.
 ///
 /// Architecture:
-///   - Team PDA stores creator's team roster + config
+///   - Team PDA stores the vault admin's agent roster + config
 ///   - Vault PDA holds the USDC treasury (token account owned by program)
-///   - PaymentRecord PDAs track every disbursement on-chain (receipts)
+///   - Member PDAs represent registered AI agents with budget caps
+///   - PaymentRecord PDAs track every agent payment on-chain (receipts)
 ///   - Milestone PDAs enable deliverable-gated payments
 
 #[program]
 pub mod creatorpay {
     use super::*;
 
-    /// Initialize a creator's team. The creator becomes the authority.
-    /// `team_name` is a human-readable label (e.g., "Ali Abdaal's Team").
+    /// Initialize a vault. The caller becomes the vault authority.
+    /// `team_name` is a human-readable label (e.g., "My AI Agent Swarm").
     pub fn create_team(
         ctx: Context<CreateTeam>,
         team_name: String,
@@ -42,9 +43,9 @@ pub mod creatorpay {
         Ok(())
     }
 
-    /// Add a contributor to the team. Up to 15 members per team.
-    /// `role` is a label like "Video Editor", "Thumbnail Designer", etc.
-    /// `wallet` is the contributor's Solana wallet (can be a Privy embedded wallet).
+    /// Register an AI agent to the vault. Up to 15 agents per vault.
+    /// `role` is a label like "Research Agent", "Trading Bot", etc.
+    /// `wallet` is the agent's Solana wallet.
     pub fn add_member(
         ctx: Context<AddMember>,
         wallet: Pubkey,
@@ -73,7 +74,7 @@ pub mod creatorpay {
         Ok(())
     }
 
-    /// Fund the team treasury vault with USDC.
+    /// Fund the agent vault treasury with USDC.
     pub fn fund_vault(ctx: Context<FundVault>, amount: u64) -> Result<()> {
         require!(amount > 0, CreatorPayError::ZeroAmount);
 
@@ -92,7 +93,7 @@ pub mod creatorpay {
     }
 
     /// Create a milestone (deliverable) that must be completed before payment.
-    /// Example: "Edit YouTube video ep. 47" or "Design 5 thumbnails for batch 12".
+    /// Example: "Complete API integration task" or "Deliver research report batch #12".
     pub fn create_milestone(
         ctx: Context<CreateMilestone>,
         description: String,
@@ -117,7 +118,7 @@ pub mod creatorpay {
         Ok(())
     }
 
-    /// Contributor submits deliverable proof (a URI to the work).
+    /// Agent submits deliverable proof (a URI to the work).
     pub fn submit_deliverable(
         ctx: Context<SubmitDeliverable>,
         proof_uri: String,
@@ -137,7 +138,7 @@ pub mod creatorpay {
         Ok(())
     }
 
-    /// Creator approves the deliverable → funds auto-release to contributor.
+    /// Vault admin approves the deliverable → funds auto-release to agent.
     /// This is the core payment instruction. Creates an on-chain receipt.
     pub fn approve_and_pay(ctx: Context<ApproveAndPay>) -> Result<()> {
         let milestone = &mut ctx.accounts.milestone;
@@ -200,8 +201,8 @@ pub mod creatorpay {
         Ok(())
     }
 
-    /// Direct payment without a milestone (for recurring/fixed payments).
-    /// Creator pays a team member directly from the vault.
+    /// Direct payment without a milestone (for API calls, task payments, etc.).
+    /// Vault admin pays an agent directly from the vault.
     pub fn direct_pay(ctx: Context<DirectPay>, amount: u64, memo: String) -> Result<()> {
         require!(amount > 0, CreatorPayError::ZeroAmount);
         require!(memo.len() <= 128, CreatorPayError::DescriptionTooLong);
@@ -249,7 +250,7 @@ pub mod creatorpay {
         Ok(())
     }
 
-    /// Deactivate a team member (does not delete — preserves history).
+    /// Kill switch — deactivate an agent (does not delete — preserves history).
     pub fn deactivate_member(ctx: Context<DeactivateMember>) -> Result<()> {
         let member = &mut ctx.accounts.member;
         member.is_active = false;
@@ -345,7 +346,7 @@ pub struct CreateTeam<'info> {
     )]
     pub team: Account<'info, Team>,
 
-    /// The USDC (or any SPL token) mint for this team's treasury.
+    /// The USDC (or any SPL token) mint for this vault's treasury.
     pub mint: Account<'info, Mint>,
 
     /// Vault is a token account owned by the team PDA.
@@ -517,7 +518,7 @@ pub struct ApproveAndPay<'info> {
     )]
     pub vault: Account<'info, TokenAccount>,
 
-    /// The contributor's USDC token account (could be a Privy embedded wallet's ATA).
+    /// The agent's USDC token account.
     #[account(
         mut,
         token::mint = team.mint,
